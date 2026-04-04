@@ -28,14 +28,14 @@ pub fn build(b: *std.Build) void {
     // to our consumers. We must give it a name because a Zig package can expose
     // multiple modules and consumers will need to be able to specify which
     // module they want to access.
-    const mod = b.addModule("zig", .{
+    const mod = b.addModule("vmdetect", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
         // in this file, which means that if you have declarations that you
         // intend to expose to consumers that were defined in other files part
         // of this module, you will have to make sure to re-export them from
         // the root file.
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/lib/root.zig"),
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
@@ -58,7 +58,7 @@ pub fn build(b: *std.Build) void {
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
     const exe = b.addExecutable(.{
-        .name = "zig",
+        .name = "vmdetect-cli",
         .root_module = b.createModule(.{
             // b.createModule defines a new module just like b.addModule but,
             // unlike b.addModule, it does not expose the module to consumers of
@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
                 // repeated because you are allowed to rename your imports, which
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
-                .{ .name = "zig", .module = mod },
+                .{ .name = "vmdetect", .module = mod },
             },
         }),
     });
