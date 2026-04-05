@@ -4,9 +4,12 @@ const windows = std.os.windows;
 const log = std.log.scoped(.vmdetect);
 
 pub const Error = error{
+    // vmdetect
     Internal,
+    // allocator
     OutOfMemory,
-};
+    // utf
+    DanglingSurrogateHalf, ExpectedSecondSurrogateHalf, UnexpectedSecondSurrogateHalf };
 
 pub fn checkPCI(allocator: std.mem.Allocator) Error!bool {
     // grab device info pointer for all class types
@@ -93,34 +96,60 @@ fn printDeviceProperties(allocator: std.mem.Allocator, devInfo: setup_api.HDEVIN
         const buf = try allocator.alloc(u8, requiredSize);
         defer allocator.free(buf);
         if (setup_api.SetupDiGetDeviceRegistryPropertyW(devInfo, data.*, property, &dataType, @ptrCast(buf.ptr), requiredSize, null) == 0) {
-            log.err("failed to get device registry property: {}", .{windows.kernel32.GetLastError()});
+            log.err("failed to get device registry property: {}\n", .{windows.kernel32.GetLastError()});
             return error.Internal;
         }
 
         // print property
         try printProperty(allocator, property, dataType, buf);
     }
-    log.info("----------------------------", .{});
+    log.info("----------------------------\n", .{});
 }
 
 fn printProperty(allocator: std.mem.Allocator, property: setup_api.SPDRP, dataType: setup_api.REG, propBuf: []const u8) !void {
     switch (dataType) {
-        .NONE => log.info("{s}: (none)", .{@tagName(property)}),
-        .BINARY => log.info("{s}: <binary>", .{@tagName(property)}),
+        .NONE => log.info("{s}: (none)\n", .{@tagName(property)}),
+        .BINARY => log.info("{s}: <binary>\n", .{@tagName(property)}),
         .DWORD => {
             if (propBuf.len >= 4) {
-                log.info("{s}: {d}", .{ @tagName(property), std.mem.readInt(u32, propBuf[0..4], .little) });
+                log.info("{s}: {d}\n", .{ @tagName(property), std.mem.readInt(u32, propBuf[0..4], .little) });
             } else {
-                log.info("{s}: <invalid data>", .{@tagName(property)});
+                log.info("{s}: <invalid data>\n", .{@tagName(property)});
             }
         },
         .SZ, .EXPAND_SZ => {
-            // const utf16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, propBuf));
-            // const buf8 = try allocator.alloc(u8, )
-            _ = allocator;
-            log.info("{s}: {s}", .{ @tagName(property), propBuf });
+            // windows strings are UTF-16 :/
+            const upperBound: usize = (propBuf.len / 2) * 3;
+            const utf16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, propBuf));
+            const utf8 = try allocator.alloc(u8, upperBound);
+            defer allocator.free(utf8);
+            const realSize = try std.unicode.utf16LeToUtf8(utf8, utf16);
+            log.info("{s}: {s}\n", .{ @tagName(property), utf8[0 .. realSize - 1] });
         },
-        .MULTI_SZ => {},
-        else => log.info("{s}: <unusual type {}>", .{ @tagName(property), dataType }),
+        .MULTI_SZ => {
+            log.info("{s}: [", .{@tagName(property)});
+            const utf16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, propBuf));
+            var start: usize = 0;
+            var end: usize = 0;
+            while (utf16[start] != 0) {
+                while (utf16[end] != 0) {
+                    end += 1;
+                }
+
+                const upperBound: usize = (end - start) * 3;
+                const utf8 = try allocator.alloc(u8, upperBound);
+                defer allocator.free(utf8);
+                const realSize = try std.unicode.utf16LeToUtf8(utf8, utf16[start..end]);
+
+                if (start != 0) {
+                    log.info(", ", .{});
+                }
+                log.info("\"{s}\"", .{utf8[0 .. realSize - 1]});
+
+                start = end;
+            }
+            log.info("]\n", .{});
+        },
+        else => log.info("{s}: <unusual type {}>\n", .{ @tagName(property), dataType }),
     }
 }

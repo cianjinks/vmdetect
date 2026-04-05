@@ -16,7 +16,7 @@ fn logFn(
     _ = level;
     var buf: [1024]u8 = undefined;
     var w = std.fs.File.stdout().writer(&buf);
-    w.interface.print(format ++ "\n", args) catch {};
+    w.interface.print(format, args) catch {};
     w.interface.flush() catch {};
 }
 
