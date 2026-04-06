@@ -194,7 +194,7 @@ fn printDeviceProperties(allocator: std.mem.Allocator, _: ?*std.ArrayList(root.F
 }
 
 fn printProperty(allocator: std.mem.Allocator, name: []const u8, property: DeviceProperty) !void {
-    switch (property.type) {
+    switch (property.type | property.typeMod) {
         setup_api.DEVPROP_TYPE_EMPTY, setup_api.DEVPROP_TYPE_NULL => log.info("{s}: (none)\n", .{name}),
         setup_api.DEVPROP_TYPE_BINARY => log.info("{s}: <binary>\n", .{name}),
         setup_api.DEVPROP_TYPE_BOOLEAN => {
