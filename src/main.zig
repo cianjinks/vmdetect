@@ -24,13 +24,21 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     defer _ = gpa.deinit();
 
-    runCheck(gpa.allocator(), "checkPCI", vmdetect.checkPCI);
+    runCheck(gpa.allocator(), "checkDevices", vmdetect.checkDevices);
 }
 
-fn runCheck(allocator: std.mem.Allocator, comptime checkName: []const u8, comptime check: fn (std.mem.Allocator) anyerror!bool) void {
-    if (check(allocator)) |result| {
-        std.log.info("{s}: {s}\n", .{ checkName, if (result) "Passed" else "Failed" });
-    } else |_| {
+fn runCheck(allocator: std.mem.Allocator, comptime checkName: []const u8, comptime check: vmdetect.CheckFunction) void {
+    const report = check(allocator) catch {
         std.log.info("{s}: Error\n", .{checkName});
+        return;
+    };
+
+    if (report.passed()) {
+        std.log.info("{s}: Passed\n", .{checkName});
+    } else {
+        std.log.info("{s}: Failed\n", .{checkName});
+        for (report.failures) |failure| {
+            std.log.info("  - {s}\n", .{failure.reason});
+        }
     }
 }
