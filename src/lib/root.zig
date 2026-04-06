@@ -41,8 +41,10 @@ pub const Report = struct {
 // which checks failed, if any.
 pub const CheckFunction = *const fn (std.mem.Allocator) Error!Report;
 
-// checkDevices checks all devices known to the Windows PnP manager to look for common VM related-devices.
+// checkDevices implements `CheckFunction` and checks all devices known to the Windows PnP manager to look for common VM related-devices.
 pub const checkDevices = device.checkDevices;
+
+pub const debugPrintDevices = device.debugPrintDevices;
 
 fn checkDrivers() void {
     // TODO

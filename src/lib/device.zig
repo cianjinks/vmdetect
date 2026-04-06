@@ -7,7 +7,17 @@ const log = std.log.scoped(.vmdetect);
 // checkDevices checks all devices known to the Windows PnP manager to look for common VM related-devices.
 pub fn checkDevices(allocator: std.mem.Allocator) root.Error!root.Report {
     var failures = std.ArrayList(root.Failure).empty;
+    try enumerateDevices(allocator, &checkDevice, &failures);
+    return root.Report{ .failures = try failures.toOwnedSlice(allocator) };
+}
 
+pub fn debugPrintDevices(allocator: std.mem.Allocator) root.Error!void {
+    try enumerateDevices(allocator, &printDeviceProperties, null);
+}
+
+const EnumerateFunction = *const fn (std.mem.Allocator, ?*std.ArrayList(root.Failure), setup_api.HDEVINFO, *setup_api.SP_DEVINFO_DATA) root.Error!void;
+
+fn enumerateDevices(allocator: std.mem.Allocator, callback: EnumerateFunction, failures: ?*std.ArrayList(root.Failure)) !void {
     // grab device info pointer for all class types
     const devInfo = setup_api.SetupDiGetClassDevsW(null, null, null, .ALLCLASSES);
     if (devInfo == windows.INVALID_HANDLE_VALUE) {
@@ -24,7 +34,7 @@ pub fn checkDevices(allocator: std.mem.Allocator) root.Error!root.Report {
     };
     var i: setup_api.DWORD = 0;
     while (setup_api.SetupDiEnumDeviceInfo(devInfo, i, &devData) != 0) {
-        try checkDevice(allocator, &failures, devInfo, &devData);
+        try callback(allocator, failures, devInfo, &devData);
         i += 1;
     }
 
@@ -33,12 +43,10 @@ pub fn checkDevices(allocator: std.mem.Allocator) root.Error!root.Report {
         log.err("failed to free device info pointer: {}", .{windows.kernel32.GetLastError()});
         return error.Internal;
     }
-
-    return root.Report{ .failures = try failures.toOwnedSlice(allocator) };
 }
 
-fn checkDevice(allocator: std.mem.Allocator, failures: *std.ArrayList(root.Failure), devInfo: setup_api.HDEVINFO, devData: *setup_api.SP_DEVINFO_DATA) !void {
-    try checkDeviceStrings(allocator, failures, devInfo, devData);
+fn checkDevice(allocator: std.mem.Allocator, failures: ?*std.ArrayList(root.Failure), devInfo: setup_api.HDEVINFO, devData: *setup_api.SP_DEVINFO_DATA) !void {
+    try checkDeviceStrings(allocator, failures.?, devInfo, devData);
     // TODO: check PCI
     // TODO: cmos?
     // try printDeviceProperties(allocator, devInfo, devData);
@@ -74,15 +82,15 @@ fn checkDeviceStrings(allocator: std.mem.Allocator, failures: *std.ArrayList(roo
     };
 
     for (stringPropertiesToCheck) |property| {
-        if (getDeviceProperty(allocator, devInfo, devData, property.key) catch null) |deviceDesc| {
-            defer allocator.free(deviceDesc.data);
+        if (getDeviceProperty(allocator, devInfo, devData, property.key) catch null) |actualProperty| {
+            defer allocator.free(actualProperty.data);
 
             // get string for property
-            if (deviceDesc.type != setup_api.DEVPROP_TYPE_STRING) {
+            if (actualProperty.type != setup_api.DEVPROP_TYPE_STRING) {
                 log.warn("found property which is not a string? {s}\n", .{property.name});
                 continue;
             }
-            const value = try parseStringProperty(allocator, deviceDesc.data);
+            const value = try parseStringProperty(allocator, actualProperty.data);
             defer allocator.free(value);
 
             // check for substrings in string (case insensitive)
@@ -139,7 +147,7 @@ fn parseStringProperty(allocator: std.mem.Allocator, propBuf: []const u8) ![]u8 
     return allocator.realloc(utf8, end);
 }
 
-fn printDeviceProperties(allocator: std.mem.Allocator, devInfo: setup_api.HDEVINFO, data: *setup_api.SP_DEVINFO_DATA) !void {
+fn printDeviceProperties(allocator: std.mem.Allocator, _: ?*std.ArrayList(root.Failure), devInfo: setup_api.HDEVINFO, devData: *setup_api.SP_DEVINFO_DATA) !void {
     const propertiesToPrint = [_]PropWithName{
         .{ .name = "DeviceDesc", .key = &setup_api.DEVPKEY_Device_DeviceDesc },
         .{ .name = "HardwareIds", .key = &setup_api.DEVPKEY_Device_HardwareIds },
@@ -177,60 +185,47 @@ fn printDeviceProperties(allocator: std.mem.Allocator, devInfo: setup_api.HDEVIN
     };
 
     for (propertiesToPrint) |property| {
-        // get data type + required size
-        var dataType: setup_api.DEVPROPTYPE = 0;
-        var requiredSize: setup_api.DWORD = 0;
-        _ = setup_api.SetupDiGetDevicePropertyW(devInfo, data.*, property.key, &dataType, null, 0, &requiredSize, 0);
-        if (requiredSize == 0) {
-            continue;
+        if (getDeviceProperty(allocator, devInfo, devData, property.key) catch null) |actualProperty| {
+            defer allocator.free(actualProperty.data);
+            try printProperty(allocator, property.name, actualProperty);
         }
-
-        // get property
-        const buf = try allocator.alloc(u8, requiredSize);
-        defer allocator.free(buf);
-        if (setup_api.SetupDiGetDevicePropertyW(devInfo, data.*, property.key, &dataType, @ptrCast(buf.ptr), requiredSize, null, 0) == 0) {
-            log.err("failed to get device property: {}\n", .{windows.kernel32.GetLastError()});
-            return error.Internal;
-        }
-
-        try printProperty(allocator, property.name, dataType, buf);
     }
     log.info("----------------------------\n", .{});
 }
 
-fn printProperty(allocator: std.mem.Allocator, name: []const u8, dataType: setup_api.DEVPROPTYPE, propBuf: []const u8) !void {
-    switch (dataType) {
+fn printProperty(allocator: std.mem.Allocator, name: []const u8, property: DeviceProperty) !void {
+    switch (property.type) {
         setup_api.DEVPROP_TYPE_EMPTY, setup_api.DEVPROP_TYPE_NULL => log.info("{s}: (none)\n", .{name}),
         setup_api.DEVPROP_TYPE_BINARY => log.info("{s}: <binary>\n", .{name}),
         setup_api.DEVPROP_TYPE_BOOLEAN => {
-            if (propBuf.len >= 1) {
-                log.info("{s}: {}\n", .{ name, propBuf[0] != 0 });
+            if (property.data.len >= 1) {
+                log.info("{s}: {}\n", .{ name, property.data[0] != 0 });
             } else {
                 log.info("{s}: <invalid data>\n", .{name});
             }
         },
         setup_api.DEVPROP_TYPE_UINT32 => {
-            if (propBuf.len >= 4) {
-                log.info("{s}: {d}\n", .{ name, std.mem.readInt(u32, propBuf[0..4], .little) });
+            if (property.data.len >= 4) {
+                log.info("{s}: {d}\n", .{ name, std.mem.readInt(u32, property.data[0..4], .little) });
             } else {
                 log.info("{s}: <invalid data>\n", .{name});
             }
         },
         setup_api.DEVPROP_TYPE_UINT64 => {
-            if (propBuf.len >= 8) {
-                log.info("{s}: {d}\n", .{ name, std.mem.readInt(u64, propBuf[0..8], .little) });
+            if (property.data.len >= 8) {
+                log.info("{s}: {d}\n", .{ name, std.mem.readInt(u64, property.data[0..8], .little) });
             } else {
                 log.info("{s}: <invalid data>\n", .{name});
             }
         },
         setup_api.DEVPROP_TYPE_STRING => {
-            const string = try parseStringProperty(allocator, propBuf);
+            const string = try parseStringProperty(allocator, property.data);
             defer allocator.free(string);
             log.info("{s}: {s}\n", .{ name, string });
         },
         setup_api.DEVPROP_TYPE_STRING_LIST => {
             log.info("{s}: [", .{name});
-            const utf16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, propBuf));
+            const utf16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, property.data));
             var start: usize = 0;
             var first = true;
             while (start < utf16.len and utf16[start] != 0) {
@@ -249,6 +244,6 @@ fn printProperty(allocator: std.mem.Allocator, name: []const u8, dataType: setup
             }
             log.info("]\n", .{});
         },
-        else => log.info("{s}: <type 0x{x}>\n", .{ name, dataType }),
+        else => log.info("{s}: <type 0x{x}>\n", .{ name, property.type }),
     }
 }
