@@ -32,6 +32,7 @@ fn runCheck(allocator: std.mem.Allocator, comptime checkName: []const u8, compti
         std.log.info("{s}: Error\n", .{checkName});
         return;
     };
+    defer report.deinit(allocator);
 
     if (report.passed()) {
         std.log.info("{s}: Passed\n", .{checkName});
