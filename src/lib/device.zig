@@ -47,7 +47,7 @@ fn enumerateDevices(allocator: std.mem.Allocator, callback: EnumerateFunction, f
 
 fn checkDevice(allocator: std.mem.Allocator, failures: ?*std.ArrayList(root.Failure), devInfo: setup_api.HDEVINFO, devData: *setup_api.SP_DEVINFO_DATA) !void {
     try checkDeviceStrings(allocator, failures.?, devInfo, devData);
-    // TODO: check PCI
+    try checkPCI(allocator, failures.?, devInfo, devData);
     // TODO: cmos?
     // try printDeviceProperties(allocator, devInfo, devData);
 }
@@ -86,7 +86,7 @@ fn checkDeviceStrings(allocator: std.mem.Allocator, failures: *std.ArrayList(roo
             defer allocator.free(actualProperty.data);
 
             // get string for property
-            if (actualProperty.type != setup_api.DEVPROP_TYPE_STRING) {
+            if (actualProperty.propType != setup_api.DEVPROP_TYPE_STRING) {
                 log.warn("found property which is not a string? {s}\n", .{property.name});
                 continue;
             }
@@ -104,8 +104,45 @@ fn checkDeviceStrings(allocator: std.mem.Allocator, failures: *std.ArrayList(roo
     }
 }
 
+fn checkPCI(allocator: std.mem.Allocator, failures: *std.ArrayList(root.Failure), devInfo: setup_api.HDEVINFO, devData: *setup_api.SP_DEVINFO_DATA) !void {
+    const enumeratorNameProperty = getDeviceProperty(allocator, devInfo, devData, &setup_api.DEVPKEY_Device_EnumeratorName) catch null orelse return;
+    defer allocator.free(enumeratorNameProperty.data);
+
+    // check if this is a PCI Device
+    if (enumeratorNameProperty.propType != setup_api.DEVPROP_TYPE_STRING) {
+        log.warn("found enumerator name property which is not a string?", .{});
+        return;
+    }
+    const enumeratorName = try parseStringProperty(allocator, enumeratorNameProperty.data);
+    defer allocator.free(enumeratorName);
+    if (!std.mem.eql(u8, enumeratorName, "PCI")) {
+        return;
+    }
+
+    // check PCI hardware IDs
+    const hardwareIdsProperty = getDeviceProperty(allocator, devInfo, devData, &setup_api.DEVPKEY_Device_HardwareIds) catch null orelse {
+        log.warn("found PCI device with no hardware IDs?: {s}", .{enumeratorName});
+        return;
+    };
+    defer allocator.free(hardwareIdsProperty.data);
+    if ((hardwareIdsProperty.propType | hardwareIdsProperty.typeMod) != setup_api.DEVPROP_TYPE_STRING_LIST) {
+        log.warn("found hardware IDs property which is not a string array?", .{});
+        return;
+    }
+    var hardwareIds = try parseStringArrayProperty(allocator, hardwareIdsProperty.data);
+    defer {
+        for (hardwareIds.items) |s| allocator.free(s);
+        defer hardwareIds.deinit(allocator);
+    }
+    for (hardwareIds.items) |s| {
+        log.info("{s}\n", .{s});
+    }
+
+    _ = failures;
+}
+
 const DeviceProperty = struct {
-    type: setup_api.DEVPROPTYPE,
+    propType: setup_api.DEVPROPTYPE,
     typeMod: setup_api.DEVPROPTYPE,
     data: []u8,
 };
@@ -129,7 +166,7 @@ fn getDeviceProperty(allocator: std.mem.Allocator, devInfo: setup_api.HDEVINFO, 
     }
 
     return DeviceProperty{
-        .type = dataType & setup_api.DEVPROP_MASK_TYPE,
+        .propType = dataType & setup_api.DEVPROP_MASK_TYPE,
         .typeMod = dataType & setup_api.DEVPROP_MASK_TYPEMOD,
         .data = buf,
     };
@@ -145,6 +182,31 @@ fn parseStringProperty(allocator: std.mem.Allocator, propBuf: []const u8) ![]u8 
     // strip null terminator
     const end = if (realSize > 0 and utf8[realSize - 1] == 0) realSize - 1 else realSize;
     return allocator.realloc(utf8, end);
+}
+
+fn parseStringArrayProperty(allocator: std.mem.Allocator, propBuf: []const u8) !std.ArrayList([]const u8) {
+    var list = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (list.items) |s| allocator.free(s);
+        list.deinit(allocator);
+    }
+
+    const utf16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, propBuf));
+    var start: usize = 0;
+    while (start < utf16.len and utf16[start] != 0) {
+        var end = start;
+        while (end < utf16.len and utf16[end] != 0) {
+            end += 1;
+        }
+        const upperBound: usize = (end - start) * 3;
+        const utf8Extra = try allocator.alloc(u8, upperBound);
+        const realSize = try std.unicode.utf16LeToUtf8(utf8Extra, utf16[start..end]);
+        try list.append(allocator, try allocator.realloc(utf8Extra, realSize));
+
+        start = end + 1;
+    }
+
+    return list;
 }
 
 fn printDeviceProperties(allocator: std.mem.Allocator, _: ?*std.ArrayList(root.Failure), devInfo: setup_api.HDEVINFO, devData: *setup_api.SP_DEVINFO_DATA) !void {
@@ -194,7 +256,7 @@ fn printDeviceProperties(allocator: std.mem.Allocator, _: ?*std.ArrayList(root.F
 }
 
 fn printProperty(allocator: std.mem.Allocator, name: []const u8, property: DeviceProperty) !void {
-    switch (property.type | property.typeMod) {
+    switch (property.propType | property.typeMod) {
         setup_api.DEVPROP_TYPE_EMPTY, setup_api.DEVPROP_TYPE_NULL => log.info("{s}: (none)\n", .{name}),
         setup_api.DEVPROP_TYPE_BINARY => log.info("{s}: <binary>\n", .{name}),
         setup_api.DEVPROP_TYPE_BOOLEAN => {
@@ -224,26 +286,21 @@ fn printProperty(allocator: std.mem.Allocator, name: []const u8, property: Devic
             log.info("{s}: {s}\n", .{ name, string });
         },
         setup_api.DEVPROP_TYPE_STRING_LIST => {
+            var strings = try parseStringArrayProperty(allocator, property.data);
+            defer {
+                for (strings.items) |s| allocator.free(s);
+                strings.deinit(allocator);
+            }
+
             log.info("{s}: [", .{name});
-            const utf16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, property.data));
-            var start: usize = 0;
             var first = true;
-            while (start < utf16.len and utf16[start] != 0) {
-                var end = start;
-                while (end < utf16.len and utf16[end] != 0) {
-                    end += 1;
-                }
-                const upperBound: usize = (end - start) * 3;
-                const utf8 = try allocator.alloc(u8, upperBound);
-                defer allocator.free(utf8);
-                const realSize = try std.unicode.utf16LeToUtf8(utf8, utf16[start..end]);
+            for (strings.items) |s| {
                 if (!first) log.info(", ", .{});
-                log.info("\"{s}\"", .{utf8[0..realSize]});
+                log.info("\"{s}\"", .{s});
                 first = false;
-                start = end + 1;
             }
             log.info("]\n", .{});
         },
-        else => log.info("{s}: <type 0x{x}>\n", .{ name, property.type }),
+        else => log.info("{s}: <type 0x{x}>\n", .{ name, property.propType }),
     }
 }
