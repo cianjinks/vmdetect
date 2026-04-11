@@ -7,10 +7,11 @@ pub const Error = error{
     // allocator
     OutOfMemory,
     // utf
-    DanglingSurrogateHalf,
-    ExpectedSecondSurrogateHalf,
-    UnexpectedSecondSurrogateHalf,
-};
+    DanglingSurrogateHalf, ExpectedSecondSurrogateHalf, UnexpectedSecondSurrogateHalf,
+    // parseInt
+    Overflow, InvalidCharacter
+    //
+    };
 
 pub const Failure = struct {
     reason: []const u8,

@@ -1,5 +1,6 @@
 const std = @import("std");
 const setup_api = @import("setup_api.zig");
+const pci = @import("pci.zig");
 const root = @import("root.zig");
 const windows = std.os.windows;
 const log = std.log.scoped(.vmdetect);
@@ -7,6 +8,10 @@ const log = std.log.scoped(.vmdetect);
 // checkDevices checks all devices known to the Windows PnP manager to look for common VM related-devices.
 pub fn checkDevices(allocator: std.mem.Allocator) root.Error!root.Report {
     var failures = std.ArrayList(root.Failure).empty;
+    errdefer {
+        for (failures.items) |f| f.deinit(allocator);
+        failures.deinit(allocator);
+    }
     try enumerateDevices(allocator, &checkDevice, &failures);
     return root.Report{ .failures = try failures.toOwnedSlice(allocator) };
 }
@@ -135,7 +140,9 @@ fn checkPCI(allocator: std.mem.Allocator, failures: *std.ArrayList(root.Failure)
         defer hardwareIds.deinit(allocator);
     }
     for (hardwareIds.items) |s| {
-        log.info("{s}\n", .{s});
+        const id = try pci.ParseHardwareId(s);
+
+        log.info("0x{x}{x}\n", .{ id.vendor[0], id.vendor[1] });
     }
 
     _ = failures;
