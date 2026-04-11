@@ -21,9 +21,9 @@ pub const PciId = struct {
     class: ?Class = null,
 };
 
-// ParseHardwareId takes a windows PCI device hardware ID and parses out the various IDs in hex.
+// parseHardwareId takes a windows PCI device hardware ID and parses out the various IDs in hex.
 // See: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/identifiers-for-pci-devices
-pub fn ParseHardwareId(id: []const u8) !PciId {
+pub fn parseHardwareId(id: []const u8) !PciId {
     var p = Parser{ .input = id };
 
     try p.consumePrefix("PCI\\VEN_");

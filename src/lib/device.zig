@@ -1,6 +1,7 @@
 const std = @import("std");
 const setup_api = @import("setup_api.zig");
 const pci = @import("pci.zig");
+const magic = @import("magic.zig");
 const root = @import("root.zig");
 const windows = std.os.windows;
 const log = std.log.scoped(.vmdetect);
@@ -16,6 +17,7 @@ pub fn checkDevices(allocator: std.mem.Allocator) root.Error!root.Report {
     return root.Report{ .failures = try failures.toOwnedSlice(allocator) };
 }
 
+// debugPrintDevices prints all properties for all devices known to the Windows PnP manager
 pub fn debugPrintDevices(allocator: std.mem.Allocator) root.Error!void {
     try enumerateDevices(allocator, &printDeviceProperties, null);
 }
@@ -54,7 +56,7 @@ fn checkDevice(allocator: std.mem.Allocator, failures: ?*std.ArrayList(root.Fail
     try checkDeviceStrings(allocator, failures.?, devInfo, devData);
     try checkPCI(allocator, failures.?, devInfo, devData);
     // TODO: cmos?
-    // try printDeviceProperties(allocator, devInfo, devData);
+    // TODO: bios driver?
 }
 
 const PropWithName = struct {
@@ -71,21 +73,6 @@ fn checkDeviceStrings(allocator: std.mem.Allocator, failures: *std.ArrayList(roo
         .{ .name = "Service", .key = &setup_api.DEVPKEY_Device_Service },
     };
 
-    const substrings = [_][]const u8{
-        "qemu",
-        // To support virtual IO the hypervisor provides PCI devices: https://pve.proxmox.com/wiki/Windows_VirtIO_Drivers
-        "virtio",
-        // Manufacturer of many virtualized devices
-        "red hat",
-        "redhat",
-        // When windows is virtualized it loads the `Microsoft Hyper-V Virtualization Infrastructure` driver
-        "hyper-v",
-        // Qxl is the driver for SPICE: https://pve.proxmox.com/wiki/SPICE
-        "qxl",
-        // Inter-VM Shared Memory PCI device provided by QEMU
-        "ivshmem",
-    };
-
     for (stringPropertiesToCheck) |property| {
         if (getDeviceProperty(allocator, devInfo, devData, property.key) catch null) |actualProperty| {
             defer allocator.free(actualProperty.data);
@@ -99,7 +86,7 @@ fn checkDeviceStrings(allocator: std.mem.Allocator, failures: *std.ArrayList(roo
             defer allocator.free(value);
 
             // check for substrings in string (case insensitive)
-            for (substrings) |substring| {
+            for (magic.deviceSubstrings) |substring| {
                 if (std.ascii.indexOfIgnoreCase(value, substring) != null) {
                     // TODO: add a function to get an identifier for a device to provide in the failure reason
                     try failures.append(allocator, try root.Failure.init(allocator, "Found suspicious device property: {s} = {s}", .{ property.name, value }));
@@ -109,6 +96,7 @@ fn checkDeviceStrings(allocator: std.mem.Allocator, failures: *std.ArrayList(roo
     }
 }
 
+// checkPCI looks for VM related PCI devices such as virtio etc
 fn checkPCI(allocator: std.mem.Allocator, failures: *std.ArrayList(root.Failure), devInfo: setup_api.HDEVINFO, devData: *setup_api.SP_DEVINFO_DATA) !void {
     const enumeratorNameProperty = getDeviceProperty(allocator, devInfo, devData, &setup_api.DEVPKEY_Device_EnumeratorName) catch null orelse return;
     defer allocator.free(enumeratorNameProperty.data);
@@ -140,12 +128,17 @@ fn checkPCI(allocator: std.mem.Allocator, failures: *std.ArrayList(root.Failure)
         defer hardwareIds.deinit(allocator);
     }
     for (hardwareIds.items) |s| {
-        const id = try pci.ParseHardwareId(s);
+        const id = try pci.parseHardwareId(s);
 
-        log.info("0x{x}{x}\n", .{ id.vendor[0], id.vendor[1] });
+        // check for known vm related IDs
+        for (magic.pciIds) |knownId| {
+            if (std.mem.eql(u8, &id.vendor, &knownId.vendor)) {
+                if (knownId.device == null or std.mem.eql(u8, &id.device, &knownId.device.?)) {
+                    try failures.append(allocator, try root.Failure.init(allocator, "Found suspicious PCI device ID: {s} (vendor=0x{x}{x} device=0x{x}{x})", .{ knownId.name, id.vendor[0], id.vendor[1], id.device[0], id.vendor[1] }));
+                }
+            }
+        }
     }
-
-    _ = failures;
 }
 
 const DeviceProperty = struct {
