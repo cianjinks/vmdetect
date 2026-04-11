@@ -24,111 +24,77 @@ pub const PciId = struct {
 // ParseHardwareId takes a windows PCI device hardware ID and parses out the various IDs in hex.
 // See: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/identifiers-for-pci-devices
 pub fn ParseHardwareId(id: []const u8) !PciId {
-    var pos: usize = 0;
+    var p = Parser{ .input = id };
 
-    // initial prefix
-    const prefix = "PCI\\VEN_";
-    try checkPrefix(id[pos..], prefix);
-    pos += prefix.len;
-
-    // parse vendor ID
-    try checkIdLen(id, pos + 4);
-    const vendor = try parseHex4(id[pos .. pos + 4]);
-    pos += 4;
-
-    // dev prefix
-    const devPrefix = "&DEV_";
-    try checkPrefix(id[pos..], devPrefix);
-    pos += devPrefix.len;
-
-    // parse device ID
-    try checkIdLen(id, pos + 4);
-    const device = try parseHex4(id[pos .. pos + 4]);
-    pos += 4;
+    try p.consumePrefix("PCI\\VEN_");
+    const vendor = try p.consumeHex(2);
+    try p.consumePrefix("&DEV_");
+    const device = try p.consumeHex(2);
 
     var result = PciId{ .vendor = vendor, .device = device };
 
-    // try subsys prefix
-    if (std.mem.startsWith(u8, id[pos..], "&SUBSYS_")) {
-        pos += "&SUBSYS_".len;
-
-        // parse subsys ID
-        try checkIdLen(id, pos + 4);
-        const subsysId = try parseHex4(id[pos .. pos + 4]);
-        pos += 4;
-
-        // parse subsys vendor ID
-        try checkIdLen(id, pos + 4);
-        const subsysVendorId = try parseHex4(id[pos .. pos + 4]);
-        pos += 4;
-
+    if (p.tryConsumePrefix("&SUBSYS_")) {
         result.subsys = .{
-            .id = subsysId,
-            .vendorId = subsysVendorId,
+            .id = try p.consumeHex(2),
+            .vendorId = try p.consumeHex(2),
         };
     }
 
-    // try revision prefix
-    if (std.mem.startsWith(u8, id[pos..], "&REV_")) {
-        pos += "&REV_".len;
-
-        // parse revision
-        try checkIdLen(id, pos + 2);
-        result.revision = try parseHex2(id[pos .. pos + 2]);
-        pos += 2;
+    if (p.tryConsumePrefix("&REV_")) {
+        result.revision = (try p.consumeHex(1))[0];
     }
 
-    // try class prefix
-    if (std.mem.startsWith(u8, id[pos..], "&CC_")) {
-        pos += "&CC_".len;
-
-        // parse class base
-        try checkIdLen(id, pos + 2);
-        const base = try parseHex2(id[pos .. pos + 2]);
-        pos += 2;
-
-        // parse sub class
-        try checkIdLen(id, pos + 2);
-        const sub = try parseHex2(id[pos .. pos + 2]);
-        pos += 2;
-
-        var class = Class{ .base = base, .sub = sub, .pi = null };
-
-        // try pi (optional, no prefix separator)
-        if (id.len >= pos + 2) {
-            class.pi = try parseHex2(id[pos .. pos + 2]);
-            pos += 2;
-        }
-
+    if (p.tryConsumePrefix("&CC_")) {
+        var class = Class{ .base = (try p.consumeHex(1))[0], .sub = (try p.consumeHex(1))[0], .pi = null };
+        if (try p.tryConsumeHex(1)) |pi| class.pi = pi[0];
         result.class = class;
     }
 
-    if (pos != id.len) {
-        log.err("invalid PCI hardware ID: {s}\n", .{id});
+    if (!p.done()) {
+        log.err("invalid PCI hardware ID: failed to parse all bytes: {s}\n", .{id});
         return error.Internal;
     }
 
     return result;
 }
 
-fn parseHex4(input: []const u8) ![2]u8 {
-    return std.mem.toBytes(std.mem.nativeToBig(u16, try std.fmt.parseInt(u16, input, 16)));
-}
+const Parser = struct {
+    input: []const u8,
+    pos: usize = 0,
 
-fn parseHex2(input: []const u8) !u8 {
-    return try std.fmt.parseInt(u8, input, 16);
-}
-
-fn checkPrefix(input: []const u8, prefix: []const u8) !void {
-    if (!std.mem.startsWith(u8, input, prefix)) {
-        log.err("PCI hardware ID is missing expected prefix {s}: {s}\n", .{ prefix, input });
-        return error.Internal;
+    fn consumePrefix(self: *Parser, prefix: []const u8) !void {
+        if (!std.mem.startsWith(u8, self.input[self.pos..], prefix)) {
+            log.err("PCI hardware ID is missing expected prefix {s}: {s}\n", .{ prefix, self.input[self.pos..] });
+            return error.Internal;
+        }
+        self.pos += prefix.len;
     }
-}
 
-fn checkIdLen(id: []const u8, requiredLen: usize) !void {
-    if (id.len < requiredLen) {
-        log.err("PCI hardware ID is too short: {s}\n", .{id});
-        return error.Internal;
+    fn tryConsumePrefix(self: *Parser, prefix: []const u8) bool {
+        if (!std.mem.startsWith(u8, self.input[self.pos..], prefix)) return false;
+        self.pos += prefix.len;
+        return true;
     }
-}
+
+    fn consumeHex(self: *Parser, comptime n: usize) ![n]u8 {
+        if (self.pos + n * 2 > self.input.len) {
+            log.err("invalid PCI hardware ID: failed to find hex: {s}\n", .{self.input});
+            return error.Internal;
+        }
+        var out: [n]u8 = undefined;
+        for (0..n) |i| {
+            out[i] = try std.fmt.parseInt(u8, self.input[self.pos + i * 2 .. self.pos + i * 2 + 2], 16);
+        }
+        self.pos += n * 2;
+        return out;
+    }
+
+    fn tryConsumeHex(self: *Parser, comptime n: usize) !?[n]u8 {
+        if (self.pos + n * 2 > self.input.len) return null;
+        return try self.consumeHex(n);
+    }
+
+    fn done(self: *Parser) bool {
+        return self.pos == self.input.len;
+    }
+};
