@@ -1,5 +1,6 @@
 const std = @import("std");
 const device = @import("device.zig");
+const cpu = @import("cpu.zig");
 
 pub const Error = error{
     // vmdetect
@@ -47,14 +48,14 @@ pub const checkDevices = device.checkDevices;
 
 pub const debugPrintDevices = device.debugPrintDevices;
 
+pub const checkCPU = cpu.checkCPU;
+
+pub const debugPrintCpuid = cpu.debugPrintCpuid;
+
 fn checkDrivers() void {
     // TODO
 }
 
 fn checkProcesses() void {
-    // TODO
-}
-
-fn checkCPU() void {
     // TODO
 }

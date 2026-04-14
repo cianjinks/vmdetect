@@ -1,8 +1,8 @@
 const std = @import("std");
+const root = @import("root.zig");
 const setup_api = @import("setup_api.zig");
 const pci = @import("pci.zig");
 const magic = @import("magic.zig");
-const root = @import("root.zig");
 const windows = std.os.windows;
 const log = std.log.scoped(.vmdetect);
 
@@ -55,8 +55,6 @@ fn enumerateDevices(allocator: std.mem.Allocator, callback: EnumerateFunction, f
 fn checkDevice(allocator: std.mem.Allocator, failures: ?*std.ArrayList(root.Failure), devInfo: setup_api.HDEVINFO, devData: *setup_api.SP_DEVINFO_DATA) !void {
     try checkDeviceStrings(allocator, failures.?, devInfo, devData);
     try checkPCI(allocator, failures.?, devInfo, devData);
-    // TODO: cmos?
-    // TODO: bios driver?
 }
 
 const PropWithName = struct {
