@@ -47,8 +47,6 @@ pub fn main() !void {
         vmdetect.debugPrintDevices(allocator) catch {
             std.log.err("Unexpected error encountered...\n", .{});
         };
-    } else if (std.mem.eql(u8, args[1], "debug-print-cpuid")) {
-        vmdetect.debugPrintCpuid();
     } else {
         printHelp();
     }
